@@ -1,29 +1,59 @@
-WITH flights AS (
-  SELECT * FROM {{ ref('prep_flights') }}
+WITH departures AS ( 
+	SELECT flight_date 
+			,origin AS faa
+			,COUNT(DISTINCT dest) AS nunique_to
+			,COUNT(sched_dep_time) AS dep_planned
+			,SUM(cancelled) AS dep_cancelled
+			,SUM(diverted) AS dep_diverted
+			,COUNT(arr_time) AS dep_n_flights
+--			,COUNT(DISTINCT tail_number) AS dep_nunique_tails -- BONUS TASK
+--			,COUNT(DISTINCT airline) AS dep_nunique_airlines -- BONUS TASK
+	FROM {{ref('prep_flights')}}
+	WHERE origin IN (SELECT DISTINCT airport_code FROM {{ref('prep_weather_daily')}})
+	GROUP BY origin, flight_date 
+	ORDER BY origin, flight_date
 ),
-weather AS (
-  SELECT * FROM {{ ref('prep_weather_daily') }}
+arrivals AS (
+	SELECT flight_date
+			,dest AS faa
+			,COUNT(DISTINCT origin) AS nunique_from
+			,COUNT(sched_dep_time) AS arr_planned
+			,SUM(cancelled) AS arr_cancelled
+			,SUM(diverted) AS arr_diverted
+			,COUNT(arr_time) AS arr_n_flights
+--			,COUNT(DISTINCT tail_number) AS arr_nunique_tails -- BONUS TASK
+--			,COUNT(DISTINCT airline) AS arr_nunique_airlines -- BONUS TASK
+	FROM {{ref('prep_flights')}}
+	WHERE dest IN (SELECT DISTINCT airport_code FROM {{ref('prep_weather_daily')}})
+	GROUP BY dest, flight_date
+	ORDER BY dest, flight_date
+),
+total_stats AS (
+	SELECT flight_date
+			,faa
+			,nunique_to
+			,nunique_from
+	--		,(nunique_to + nunique_from)::NUMERIC/2 AS n_connections -- fractions would indicate that for the number of connections to!=from --BONUS task
+			,dep_planned + arr_planned AS total_planned
+			,dep_cancelled + arr_cancelled AS total_cancelled
+			,dep_diverted + arr_diverted AS total_diverted
+	--		,((dep_cancelled + arr_cancelled + dep_diverted + arr_diverted)::NUMERIC/(dep_planned + arr_planned)::NUMERIC)*100 AS percent_change -- BONUS TASK
+			,dep_n_flights + arr_n_flights AS total_flights
+	--		,(dep_nunique_tails + arr_nunique_tails)::NUMERIC/2 AS nunique_tails -- fractions would indicate that for the number of tails to!=from -- BONUS TASK
+	--		,(dep_nunique_airlines + arr_nunique_airlines)::NUMERIC/2 AS nunique_airlines -- fractions would indicate that for the number of airlines to!=from -- BONUS TASK
+	FROM departures
+	JOIN arrivals
+	USING (flight_date, faa)
 )
-SELECT
-  f.origin AS faa,
-  a.city,
-  a.country,
-  a.name,
-  f.flight_date,
-  COUNT(DISTINCT f.dest) AS unique_departure_connections,
-  COUNT(DISTINCT f.origin) AS unique_arrival_connections,
-  COUNT(*) AS total_flights,
-  SUM(CASE WHEN f.cancelled THEN 1 ELSE 0 END) AS total_cancelled,
-  SUM(CASE WHEN f.diverted THEN 1 ELSE 0 END) AS total_diverted,
-  SUM(CASE WHEN NOT f.cancelled AND NOT f.diverted THEN 1 ELSE 0 END) AS total_actual,
-  MIN(w.temp_min) AS daily_min_temp,
-  MAX(w.temp_max) AS daily_max_temp,
-  SUM(w.precipitation) AS daily_precipitation,
-  SUM(w.snow) AS daily_snow,
-  AVG(w.wind_dir) AS daily_avg_wind_dir,
-  AVG(w.wind_speed) AS daily_avg_wind_speed,
-  MAX(w.wind_gust) AS daily_peak_gust
-FROM flights f
-JOIN weather w ON f.origin = w.faa AND f.flight_date = w.date
-JOIN {{ ref('staging_airports') }} a ON f.origin = a.faa
-GROUP BY f.origin, a.city, a.country, a.name, f.flight_date
+SELECT t.* 
+		,w.min_temp_c
+		,w.max_temp_c
+		,w.precipitation_mm
+		,w.max_snow_mm
+		,w.avg_wind_direction
+		,w.avg_wind_speed_kmh
+		,w.wind_peakgust_kmh
+FROM total_stats t
+LEFT JOIN {{ref('prep_weather_daily')}} w
+ON faa = airport_code AND flight_date = date
+ORDER BY total_diverted DESC
